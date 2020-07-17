@@ -8,13 +8,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pandas.plotting import scatter_matrix
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
+from sklearn.model_selection import (
+    train_test_split,
+    StratifiedShuffleSplit,
+    cross_val_score,
+    GridSearchCV,
+)
 from sklearn.preprocessing import OrdinalEncoder, OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
 from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
 
 DATA_FILE = "datasets/housing/housing.csv"
 DATA_PATH = os.path.join(os.path.dirname(os.path.abspath("__file__")), DATA_FILE)
@@ -39,17 +46,81 @@ def main():
     test_set.drop("income_cat", axis=1, inplace=True)
     housing = train_set.drop("median_house_value", axis=1)
     housing_labels = train_set["median_house_value"].copy()
-    housing_prepared = prepare(housing)
+    pipe = pipeline(housing)
+    housing_prepared = pipe.transform(housing)
+
     lm = fit_linear(housing_prepared, housing_labels)
+    lm_rmse = rmse(lm, housing_prepared, housing_labels)
+    lm_cv_scores = cv(lm, housing_prepared, housing_labels)
+
+    tree = fit_tree(housing_prepared, housing_labels)
+    tree_rmse = rmse(tree, housing_prepared, housing_labels)
+    tree_cv_scores = cv(tree, housing_prepared, housing_labels)
+
+    forest = fit_forest(housing_prepared, housing_labels)
+    forest_rmse = rmse(forest, housing_prepared, housing_labels)
+    forest_cv_scores = cv(forest, housing_prepared, housing_labels)
+
+    test_model(forest, pipe, test_set)
 
 def fit_linear(housing_prepared, housing_labels):
     model = LinearRegression()
     model.fit(housing_prepared, housing_labels)
     return model
 
+
+def fit_tree(housing_prepared, housing_labels):
+    model = DecisionTreeRegressor()
+    model.fit(housing_prepared, housing_labels)
+    return model
+
+
+def fit_forest(housing_prepared, housing_labels):
+    model = RandomForestRegressor()
+    model.fit(housing_prepared, housing_labels)
+    return model
+
+
 def rmse(model, housing_prepared, housing_labels):
     predictions = model.predict(housing_prepared)
     return np.sqrt(mean_squared_error(housing_labels, predictions))
+
+
+def cv(model, housing_prepared, housing_labels):
+    scores = cross_val_score(
+        model, housing_prepared, housing_labels, scoring="neg_mean_squared_error", cv=10
+    )
+    return np.sqrt(-scores)
+
+
+def forest_grid(housing_prepared, housing_labels):
+    param_grid = [
+        {"n_estimators": [3, 10, 30], "max_features": [2, 4, 6, 8]},
+        {"bootstrap": [False], "n_estimators": [3, 10], "max_features": [2, 3, 4]},
+    ]
+
+    model = RandomForestRegressor()
+
+    grid_search = GridSearchCV(
+        model,
+        param_grid,
+        cv=5,
+        scoring="neg_mean_squared_error",
+        return_train_score=True,
+    )
+
+    grid_search.fit(housing_prepared, housing_labels)
+
+    return grid_search
+
+def test_model(model, pipe, test_set):
+    X_test = test_set.drop("median_house_value", axis=1)
+    y_test = test_set["median_house_value"].copy()
+    X_test_prepared = pipe.transform(X_test)
+    final_predictions = model.predict(X_test_prepared)
+    final_mse = mean_squared_error(y_test, final_predictions)
+    print(final_mse)
+    return final_predictions
 
 def plot_map(housing):
     housing.plot(
@@ -89,7 +160,7 @@ def impute_missing(housing):
     housing["total_bedrooms"].fillna(median_bedrooms, inplace=True)
 
 
-def prepare(housing):
+def pipeline(fit_data=None):
     num_pipeline = Pipeline(
         [
             ("imputer", SimpleImputer(strategy="median")),
@@ -104,8 +175,9 @@ def prepare(housing):
     full_pipeline = ColumnTransformer(
         [("num", num_pipeline, num_attribs), ("cat", OneHotEncoder(), cat_attribs),]
     )
-
-    return full_pipeline.fit_transform(housing)
+    if fit_data is not None:
+        full_pipeline.fit(fit_data)
+    return full_pipeline
 
 class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
